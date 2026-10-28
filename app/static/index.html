@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>منصة المحاسبة</title>
+<style>
+:root{--navy:#1f2a44;--purple:#714b67;--accent:#017e84;--bg:#f9fafb;--line:#dee2e6;--ok:#198754;--warn:#d97706;--bad:#dc3545}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,"Segoe UI",Tahoma,sans-serif;background:var(--bg);color:#212529;font-size:15px}
+header{background:var(--navy);color:#fff;display:flex;align-items:center;gap:6px;padding:0 10px;height:46px;overflow-x:auto;white-space:nowrap}
+header .brand{font-weight:700;margin-inline-end:12px}
+header a{color:#e9ecef;text-decoration:none;padding:12px 10px;cursor:pointer;border-bottom:3px solid transparent}
+header a.on,header a:hover{border-color:#c9a7c0;color:#fff}
+#bar{background:#fff3cd;color:#664d03;padding:6px 12px;font-size:13px;display:flex;justify-content:space-between}
+#bar.online{background:#d1e7dd;color:#0f5132}
+main{padding:14px;max-width:1100px;margin:auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:6px;padding:14px;margin-bottom:14px}
+h2{margin:0 0 12px;font-size:19px;color:var(--purple)}
+table{width:100%;border-collapse:collapse}
+th,td{padding:8px;border-bottom:1px solid var(--line);text-align:start}
+th{background:#f1f3f5;font-weight:600}
+td.n,th.n{text-align:end;font-variant-numeric:tabular-nums;direction:ltr}
+input,select,button{font:inherit;padding:8px 10px;border:1px solid #adb5bd;border-radius:4px;background:#fff}
+button{background:var(--purple);color:#fff;border:0;cursor:pointer}
+button.sec{background:#6c757d}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:end}
+.row label{display:flex;flex-direction:column;font-size:13px;color:#495057;gap:3px}
+.badge{padding:2px 9px;border-radius:10px;font-size:12px;color:#fff;background:var(--ok)}
+.badge.pending{background:var(--warn)}.badge.bad{background:var(--bad)}
+.msg{padding:8px 12px;border-radius:4px;margin-bottom:10px}.msg.err{background:#f8d7da;color:#842029}.msg.ok{background:#d1e7dd;color:#0f5132}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.kpi{font-size:24px;font-weight:700;direction:ltr;text-align:end}
+.cur{color:#6c757d;font-size:12px;margin-inline-start:4px}
+.overflow{overflow-x:auto}
+</style>
+</head>
+<body>
+<header id="nav"></header>
+<div id="bar"></div>
+<main id="app"></main>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=v=>Number(v).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:4});
+let KEY=localStorage.getItem("apikey")||"";
+let outbox=JSON.parse(localStorage.getItem("outbox")||"[]");
+let lastSync=localStorage.getItem("lastSync")||"—";
+const saveBox=()=>localStorage.setItem("outbox",JSON.stringify(outbox));
+
+async function api(path,opt={}){
+  const r=await fetch("/api/v1"+path,{...opt,headers:{"Content-Type":"application/json","X-API-Key":KEY,...(opt.headers||{})}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(typeof data.detail==="string"?data.detail:JSON.stringify(data.detail||data));
+  return data;
+}
+function msg(el,text,ok){el.innerHTML=`<div class="msg ${ok?"ok":"err"}">${esc(text)}</div>`}
+
+function renderBar(){
+  const on=navigator.onLine;
+  const b=$("#bar");b.className=on?"online":"";
+  b.innerHTML=`<span>${on?"متصل":"غير متصل — تُحفظ الفواتير محلياً"}</span><span>بانتظار الإرسال: ${outbox.length} · آخر مزامنة: ${esc(lastSync)}</span>`;
+}
+const deviceId=localStorage.getItem("device")||(()=>{const d=crypto.randomUUID();localStorage.setItem("device",d);return d})();
+async function flush(){
+  if(!navigator.onLine||!KEY) return;
+  const pending=outbox.filter(o=>!o.error);
+  if(!pending.length) return;
+  try{
+    const r=await api("/sync/push",{method:"POST",body:JSON.stringify({device_id:deviceId,device_name:navigator.platform,
+      ops:pending.map(o=>({op_id:o.key,type:"sales_invoice",payload:o.body}))})});
+    for(const x of r.results){
+      if(x.status==="accepted"||x.status==="resolved") outbox=outbox.filter(o=>o.key!==x.op_id);
+      else{const o=outbox.find(o=>o.key===x.op_id);if(o)o.error=x.error}
+    }
+    lastSync=new Date().toLocaleString("ar");localStorage.setItem("lastSync",lastSync);
+  }catch(e){}
+  saveBox();renderBar();
+}
+addEventListener("online",()=>{renderBar();flush()});addEventListener("offline",renderBar);
+
+const pages={
+  dashboard:async el=>{
+    const [tb,inv]=await Promise.all([api("/reports/trial-balance"),api("/inventory/balances")]);
+    let profit="—";try{profit=(await api("/reports/profit")).profit}catch(e){profit="لا صلاحية"}
+    el.innerHTML=`<div class="grid">
+      <div class="card"><div>الأرباح</div><div class="kpi">${profit==="لا صلاحية"?profit:fmt(profit)}<span class="cur">${tb.currency}</span></div></div>
+      <div class="card"><div>إجمالي المدين</div><div class="kpi">${fmt(tb.total_debit)}<span class="cur">${tb.currency}</span></div></div>
+      <div class="card"><div>ميزان المراجعة</div><div class="kpi"><span class="badge ${tb.balanced?"":"bad"}">${tb.balanced?"متوازن":"غير متوازن"}</span></div></div>
+      <div class="card"><div>أصناف في المخزون</div><div class="kpi">${inv.length}</div></div></div>`;
+  },
+  customers:async el=>{
+    const rows=await api("/customers");
+    el.innerHTML=`<div class="card"><h2>العملاء</h2><div id="m"></div>
+      <div class="row"><label>الاسم<input id="cn"></label><label>حد الائتمان<input id="cl" type="number" min="0"></label>
+      <label>عملة الحد<select id="cc"><option>IQD</option><option>USD</option></select></label><button id="add">إضافة</button></div>
+      <div class="overflow"><table><tr><th>الاسم</th><th class="n">حد الائتمان</th><th></th></tr>
+      ${rows.map(r=>`<tr><td>${esc(r.name)}</td><td class="n">${r.credit_limit?fmt(r.credit_limit)+`<span class="cur">${esc(r.credit_currency)}</span>`:"—"}</td>
+      <td><button class="sec" data-led="${r.id}">كشف الحساب</button></td></tr>`).join("")}</table></div><div id="led"></div></div>`;
+    $("#add").onclick=async()=>{try{await api("/customers",{method:"POST",body:JSON.stringify({name:$("#cn").value,credit_limit:$("#cl").value||null,credit_currency:$("#cl").value?$("#cc").value:null})});go("customers")}catch(e){msg($("#m"),e.message)}};
+    el.querySelectorAll("[data-led]").forEach(b=>b.onclick=async()=>{
+      const [l,ag]=await Promise.all([api(`/customers/${b.dataset.led}/ledger`),api(`/customers/${b.dataset.led}/aging?as_of=${new Date().toISOString().slice(0,10)}`)]);
+      $("#led").innerHTML=`<h2>كشف الحساب</h2><div class="overflow"><table><tr><th>التاريخ</th><th>النوع</th><th class="n">المبلغ</th><th class="n">الرصيد</th></tr>
+      ${l.rows.map(r=>`<tr><td>${esc(r.date)}</td><td>${r.type==="invoice"?"فاتورة":"دفعة"}</td><td class="n">${fmt(r.amount)}<span class="cur">${esc(r.currency)}</span></td><td class="n">${fmt(r.balance_base)}</td></tr>`).join("")}</table></div>
+      <h2>أعمار الديون</h2><div class="grid">${Object.entries(ag).map(([k,v])=>`<div class="card">${k} يوم<div class="kpi">${fmt(v)}</div></div>`).join("")}</div>`;
+    });
+  },
+  items:async el=>{
+    const rows=await api("/items");
+    el.innerHTML=`<div class="card"><h2>الأصناف والأسعار</h2><div id="m"></div>
+      <div class="row"><label>الرمز<input id="sku"></label><label>الاسم<input id="nm"></label><button id="add">إضافة صنف</button></div>
+      <div class="row"><label>الصنف<select id="pi">${rows.map(r=>`<option value="${r.id}">${esc(r.sku)} — ${esc(r.name)}</option>`).join("")}</select></label>
+      <label>القائمة<select id="pk"><option value="retail">مفرد</option><option value="wholesale">جملة</option><option value="merchant">تاجر</option><option value="purchase">شراء</option></select></label>
+      <label>السعر<input id="pp" type="number" min="0" step="0.01"></label><label>العملة<select id="pc"><option>IQD</option><option>USD</option></select></label>
+      <label>يسري من<input id="pd" type="date" value="${new Date().toISOString().slice(0,10)}"></label><button id="addp">حفظ السعر</button></div>
+      <table><tr><th>الرمز</th><th>الاسم</th></tr>${rows.map(r=>`<tr><td>${esc(r.sku)}</td><td>${esc(r.name)}</td></tr>`).join("")}</table></div>`;
+    $("#add").onclick=async()=>{try{await api("/items",{method:"POST",body:JSON.stringify({sku:$("#sku").value,name:$("#nm").value})});go("items")}catch(e){msg($("#m"),e.message)}};
+    $("#addp").onclick=async()=>{try{await api(`/items/${$("#pi").value}/prices`,{method:"POST",body:JSON.stringify({list_kind:$("#pk").value,price:$("#pp").value,currency:$("#pc").value,valid_from:$("#pd").value})});msg($("#m"),"تم حفظ السعر",true)}catch(e){msg($("#m"),e.message)}};
+  },
+  sales:async el=>{
+    const [cs,its,whs,invs]=await Promise.all([api("/customers"),api("/items"),api("/warehouses"),api("/sales/invoices")]);
+    const opt=a=>a.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("");
+    el.innerHTML=`<div class="card"><h2>فاتورة مبيعات جديدة</h2><div id="m"></div>
+      <div class="row"><label>العميل<select id="c">${opt(cs)}</select></label><label>المستودع<select id="w">${opt(whs)}</select></label>
+      <label>التاريخ<input id="d" type="date" value="${new Date().toISOString().slice(0,10)}"></label>
+      <label>العملة<select id="cur"><option>IQD</option><option>USD</option></select></label>
+      <label>سعر الصرف (للأجنبية)<input id="fx" type="number" step="0.0001"></label></div>
+      <div class="row"><label>الصنف<select id="i">${its.map(x=>`<option value="${x.id}">${esc(x.sku)} — ${esc(x.name)}</option>`).join("")}</select></label>
+      <label>الكمية<input id="q" type="number" min="0" step="any" value="1"></label><button class="sec" id="addl">+ سطر</button></div>
+      <div id="lines"></div><div class="row"><button id="post">ترحيل الفاتورة</button></div></div>
+      <div class="card"><h2>آخر الفواتير</h2><div class="overflow"><table><tr><th>العميل</th><th>التاريخ</th><th class="n">الإجمالي</th><th>الحالة</th></tr>
+      ${invs.map(r=>`<tr><td>${esc(r.customer)}</td><td>${esc(r.date)}</td><td class="n">${fmt(r.total)}<span class="cur">${esc(r.currency)}</span></td><td><span class="badge">مرحّلة</span></td></tr>`).join("")}</table></div></div>
+      ${outbox.length?`<div class="card"><h2>بانتظار الإرسال</h2>${outbox.map(o=>`<div><span class="badge pending">معلّقة</span> ${esc(o.body.invoice_date)} ${o.error?`<span class="badge bad">${esc(o.error)}</span>`:""}</div>`).join("")}</div>`:""}`;
+    const lines=[];
+    const draw=()=>$("#lines").innerHTML=lines.length?`<table>${lines.map(l=>`<tr><td>${esc(l.label)}</td><td class="n">${esc(l.qty)}</td></tr>`).join("")}</table>`:"";
+    $("#addl").onclick=()=>{lines.push({item_id:$("#i").value,qty:$("#q").value,label:$("#i").selectedOptions[0].text});draw()};
+    $("#post").onclick=async()=>{
+      if(!lines.length) return msg($("#m"),"أضف سطراً واحداً على الأقل");
+      const body={customer_id:$("#c").value,warehouse_id:$("#w").value,invoice_date:$("#d").value,currency:$("#cur").value,
+        fx_rate:$("#fx").value||null,lines:lines.map(l=>({item_id:l.item_id,qty:l.qty}))};
+      const key=crypto.randomUUID();
+      if(!navigator.onLine){outbox.push({key,body});saveBox();renderBar();return go("sales")}
+      try{const r=await api("/sales/invoices",{method:"POST",body:JSON.stringify(body),headers:{"Idempotency-Key":key}});msg($("#m"),"تم الترحيل: "+fmt(r.total),true);lines.length=0;draw()}
+      catch(e){if(e instanceof TypeError){outbox.push({key,body});saveBox();renderBar();go("sales")}else msg($("#m"),e.message)}
+    };
+  },
+  purchases:async el=>{
+    const [vs,its,whs]=await Promise.all([api("/vendors"),api("/items"),api("/warehouses")]);
+    const opt=a=>a.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("");
+    el.innerHTML=`<div class="card"><h2>الموردون والمستودعات</h2><div id="m"></div>
+      <div class="row"><label>مورد جديد<input id="vn"></label><button id="av">إضافة</button>
+      <label>مستودع جديد<input id="wn"></label><button id="aw">إضافة</button></div></div>
+      <div class="card"><h2>فاتورة شراء (استلام للمخزون)</h2><div class="row">
+      <label>المورد<select id="v">${opt(vs)}</select></label><label>المستودع<select id="w">${opt(whs)}</select></label>
+      <label>الصنف<select id="i">${its.map(x=>`<option value="${x.id}">${esc(x.sku)}</option>`).join("")}</select></label>
+      <label>الكمية<input id="q" type="number" step="any" value="1"></label><label>تكلفة الوحدة<input id="u" type="number" step="0.01"></label>
+      <label>العملة<select id="cur"><option>IQD</option></select></label><button id="buy">ترحيل</button></div></div>`;
+    $("#av").onclick=async()=>{try{await api("/vendors",{method:"POST",body:JSON.stringify({name:$("#vn").value})});go("purchases")}catch(e){msg($("#m"),e.message)}};
+    $("#aw").onclick=async()=>{try{await api("/warehouses",{method:"POST",body:JSON.stringify({name:$("#wn").value})});go("purchases")}catch(e){msg($("#m"),e.message)}};
+    $("#buy").onclick=async()=>{try{await api("/purchases/invoices",{method:"POST",headers:{"Idempotency-Key":crypto.randomUUID()},body:JSON.stringify({vendor_id:$("#v").value,warehouse_id:$("#w").value,invoice_date:new Date().toISOString().slice(0,10),currency:$("#cur").value,lines:[{item_id:$("#i").value,qty:$("#q").value,unit_cost:$("#u").value||0}]})});msg($("#m"),"تم الاستلام",true)}catch(e){msg($("#m"),e.message)}};
+  },
+  inventory:async el=>{
+    const rows=await api("/inventory/balances");
+    el.innerHTML=`<div class="card"><h2>أرصدة المخزون</h2><div class="overflow"><table><tr><th>الرمز</th><th>الصنف</th><th>المستودع</th><th class="n">الكمية</th><th class="n">متوسط التكلفة</th></tr>
+      ${rows.map(r=>`<tr><td>${esc(r.sku)}</td><td>${esc(r.item)}</td><td>${esc(r.warehouse)}</td><td class="n">${fmt(r.qty)}</td><td class="n">${fmt(r.avg_cost)}</td></tr>`).join("")}</table></div></div>`;
+  },
+  accounting:async el=>{
+    const tb=await api("/reports/trial-balance");
+    el.innerHTML=`<div class="card"><h2>ميزان المراجعة <span class="badge ${tb.balanced?"":"bad"}">${tb.balanced?"متوازن":"غير متوازن"}</span></h2>
+      <div class="overflow"><table><tr><th>الرمز</th><th>الحساب</th><th class="n">مدين</th><th class="n">دائن</th></tr>
+      ${tb.rows.map(r=>`<tr><td>${esc(r.code)}</td><td>${esc(r.name)}</td><td class="n">${fmt(r.debit)}</td><td class="n">${fmt(r.credit)}</td></tr>`).join("")}
+      <tr><th colspan="2">الإجمالي (${esc(tb.currency)})</th><th class="n">${fmt(tb.total_debit)}</th><th class="n">${fmt(tb.total_credit)}</th></tr></table></div></div>`;
+  },
+  pos:async el=>{
+    const [cs,its,whs]=await Promise.all([api("/customers"),api("/items"),api("/warehouses")]);
+    const sid=localStorage.getItem("shift");
+    el.innerHTML=`<div class="card"><h2>نقطة البيع</h2><div id="m"></div>
+      ${sid?`<div class="row"><label>العميل<select id="c">${cs.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select></label>
+      <label>الصنف<select id="i">${its.map(x=>`<option value="${x.id}">${esc(x.sku)} — ${esc(x.name)}</option>`).join("")}</select></label>
+      <label>الكمية<input id="q" type="number" value="1" step="any"></label><button id="sell">بيع نقدي</button></div>
+      <div class="row"><label>النقد المعدود<input id="cnt" type="number"></label><button class="sec" id="close">إغلاق الوردية</button></div>`
+      :`<div class="row"><label>المستودع<select id="w">${whs.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select></label>
+      <label>رصيد الافتتاح<input id="op" type="number" value="0"></label><button id="open">فتح وردية</button></div>`}</div>`;
+    if(sid){
+      $("#sell").onclick=async()=>{try{const r=await api(`/pos/shifts/${sid}/sales`,{method:"POST",body:JSON.stringify({customer_id:$("#c").value,invoice_date:new Date().toISOString().slice(0,10),currency:"IQD",external_id:crypto.randomUUID(),lines:[{item_id:$("#i").value,qty:$("#q").value}]})});msg($("#m"),"تم البيع: "+fmt(r.total),true)}catch(e){msg($("#m"),e.message)}};
+      $("#close").onclick=async()=>{try{const r=await api(`/pos/shifts/${sid}/close`,{method:"POST",body:JSON.stringify({counted_cash:$("#cnt").value||0})});localStorage.removeItem("shift");el.innerHTML=`<div class="card"><h2>تم إغلاق الوردية</h2><p>المتوقع: ${fmt(r.expected_cash)} · المعدود: ${fmt(r.counted_cash)} · الفرق: ${fmt(r.difference)}</p></div>`}catch(e){msg($("#m"),e.message)}};
+    }else{
+      $("#open").onclick=async()=>{try{const r=await api("/pos/shifts",{method:"POST",body:JSON.stringify({warehouse_id:$("#w").value,opening_cash:$("#op").value||0})});localStorage.setItem("shift",r.id);go("pos")}catch(e){msg($("#m"),e.message)}};
+    }
+  },
+  restaurant:async el=>{
+    const [tables,its,cs]=await Promise.all([api("/restaurant/tables"),api("/items"),api("/customers")]);
+    const sid=localStorage.getItem("shift");let cur=sessionStorage.getItem("order")||"";
+    const ords=cur?await api(`/restaurant/orders/${cur}`).catch(()=>null):null;
+    if(!ords||ords.status!=="open"){cur="";sessionStorage.removeItem("order")}
+    const kit=await api("/restaurant/kitchen");
+    el.innerHTML=`<div class="card"><h2>الطاولات</h2><div id="m"></div>
+      <div class="row"><label>طاولة جديدة<input id="tn"></label><button id="addt">إضافة</button></div>
+      <div class="row">${tables.map(t=>`<button class="${t.open_order?"":"sec"}" data-t="${t.id}" data-o="${t.open_order||""}">${esc(t.name)}${t.open_order?" ●":""}</button>`).join("")}</div></div>
+      ${cur?`<div class="card"><h2>الطلب الحالي</h2>
+        <table><tr><th>الصنف</th><th class="n">الكمية</th><th>ملاحظة</th></tr>${ords.lines.map(l=>`<tr><td>${esc(l.name)}</td><td class="n">${fmt(l.qty)}</td><td>${esc(l.note||"")}</td></tr>`).join("")}</table>
+        <div class="row"><label>الصنف<select id="i">${its.map(x=>`<option value="${x.id}">${esc(x.sku)} — ${esc(x.name)}</option>`).join("")}</select></label>
+        <label>الكمية<input id="q" type="number" value="1" step="any"></label><label>ملاحظة<input id="nt"></label><button id="send">إرسال للمطبخ</button></div>
+        <div class="row"><label>العميل<select id="c">${cs.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select></label>
+        <button id="pay" ${sid?"":"disabled"}>دفع وإغلاق ${sid?"":"(افتح وردية من نقطة البيع)"}</button></div></div>`:""}
+      <div class="card"><h2>شاشة المطبخ</h2>${kit.length?kit.map(k=>`<div class="card"><b>${esc(k.table)}</b> <span class="badge pending">${esc(k.status)}</span>
+        ${k.lines.map(l=>`<div>${fmt(l.qty)} × ${esc(l.name)} ${l.note?`<i>(${esc(l.note)})</i>`:""}</div>`).join("")}
+        <button class="sec" data-k="${k.id}" data-s="${k.status}">التالي</button></div>`).join(""):"لا توجد تذاكر"}</div>`;
+    $("#addt").onclick=async()=>{try{await api("/restaurant/tables",{method:"POST",body:JSON.stringify({name:$("#tn").value})});go("restaurant")}catch(e){msg($("#m"),e.message)}};
+    el.querySelectorAll("[data-t]").forEach(b=>b.onclick=async()=>{try{let o=b.dataset.o;if(!o)o=(await api("/restaurant/orders",{method:"POST",body:JSON.stringify({table_id:b.dataset.t})})).id;sessionStorage.setItem("order",o);go("restaurant")}catch(e){msg($("#m"),e.message)}});
+    if(cur){
+      $("#send").onclick=async()=>{try{await api(`/restaurant/orders/${cur}/lines`,{method:"POST",body:JSON.stringify({lines:[{item_id:$("#i").value,qty:$("#q").value,note:$("#nt").value||null}]})});go("restaurant")}catch(e){msg($("#m"),e.message)}};
+      $("#pay").onclick=async()=>{try{const r=await api(`/restaurant/orders/${cur}/pay`,{method:"POST",body:JSON.stringify({shift_id:sid,customer_id:$("#c").value,currency:"IQD",invoice_date:new Date().toISOString().slice(0,10)})});sessionStorage.removeItem("order");go("restaurant");alert("تم الدفع: "+fmt(r.total))}catch(e){msg($("#m"),e.message)}};
+    }
+    const nxt={new:"preparing",preparing:"ready",ready:"served"};
+    el.querySelectorAll("[data-k]").forEach(b=>b.onclick=async()=>{try{await api(`/restaurant/tickets/${b.dataset.k}/status`,{method:"POST",body:JSON.stringify({status:nxt[b.dataset.s]})});go("restaurant")}catch(e){msg($("#m"),e.message)}});
+  },
+  print:async el=>{
+    const [tpls,invs]=await Promise.all([api("/print/templates"),api("/sales/invoices")]);
+    el.innerHTML=`<div class="card"><h2>قوالب الطباعة</h2><div id="m"></div>
+      <div class="row"><label>الاسم<input id="n"></label><label>الورق<select id="p"><option value="a4">A4</option><option value="a5">A5</option><option value="thermal80">حراري 80مم</option><option value="thermal58">حراري 58مم</option><option value="custom">مخصص</option></select></label>
+      <label>العرض مم<input id="w" type="number" style="width:80px"></label><label>الارتفاع مم<input id="h" type="number" style="width:80px"></label></div>
+      <div class="row"><label>رأس الفاتورة<input id="hd" style="min-width:240px"></label><label>التذييل<input id="ft" style="min-width:240px"></label><button id="add">حفظ القالب</button></div></div>
+      <div class="card"><h2>معاينة وطباعة</h2><div class="row"><label>القالب<select id="t">${tpls.map(t=>`<option value="${t.id}">${esc(t.name)} (${esc(t.paper)})</option>`).join("")}</select></label>
+      <label>الفاتورة<select id="v">${invs.map(v=>`<option value="${v.id}">${esc(v.customer)} — ${esc(v.date)} — ${fmt(v.total)}</option>`).join("")}</select></label>
+      <button id="pv">معاينة</button><button class="sec" id="pr">طباعة</button></div>
+      <iframe id="fr" sandbox="allow-same-origin allow-modals" style="width:100%;height:420px;border:1px solid var(--line);background:#fff"></iframe></div>`;
+    $("#add").onclick=async()=>{try{await api("/print/templates",{method:"POST",body:JSON.stringify({name:$("#n").value,paper:$("#p").value,width_mm:$("#w").value||null,height_mm:$("#h").value||null,header:$("#hd").value,footer:$("#ft").value})});go("print")}catch(e){msg($("#m"),e.message)}};
+    const load=async()=>{const r=await fetch(`/api/v1/sales/invoices/${$("#v").value}/print`,{method:"POST",headers:{"Content-Type":"application/json","X-API-Key":KEY},body:JSON.stringify({template_id:$("#t").value})});if(!r.ok){msg($("#m"),(await r.json()).detail||"خطأ");return false}$("#fr").srcdoc=await r.text();return true};
+    $("#pv").onclick=load;$("#pr").onclick=async()=>{if(await load())setTimeout(()=>$("#fr").contentWindow.print(),300)};
+  },
+  sync:async el=>{
+    const [cf,dv]=await Promise.all([api("/sync/conflicts"),api("/sync/devices")]);
+    el.innerHTML=`<div class="card"><h2>مركز المزامنة</h2><div id="m"></div>
+      <p>هذا الجهاز: <code>${esc(deviceId)}</code> · بانتظار الإرسال: ${outbox.filter(o=>!o.error).length} · متعارضة محلياً: ${outbox.filter(o=>o.error).length}</p>
+      <button id="now">مزامنة الآن</button></div>
+      ${outbox.filter(o=>o.error).length?`<div class="card"><h2>عمليات مرفوضة على هذا الجهاز</h2>${outbox.filter(o=>o.error).map(o=>`<div><span class="badge bad">${esc(o.error)}</span> ${esc(o.body.invoice_date)} <button class="sec" data-drop="${o.key}">حذف محلياً</button></div>`).join("")}</div>`:""}
+      <div class="card"><h2>تعارضات في الخادم</h2>${cf.length?`<table><tr><th>الجهاز</th><th>العملية</th><th>السبب</th><th></th></tr>${cf.map(x=>`<tr><td>${esc(x.device_id)}</td><td>${esc(x.type)}</td><td>${esc(x.error)}</td>
+        <td><button data-r="retry" data-d="${esc(x.device_id)}" data-o="${esc(x.op_id)}">إعادة المحاولة</button> <button class="sec" data-r="discard" data-d="${esc(x.device_id)}" data-o="${esc(x.op_id)}">تجاهل</button></td></tr>`).join("")}</table>`:"لا توجد تعارضات"}</div>
+      <div class="card"><h2>الأجهزة</h2><table><tr><th>الجهاز</th><th>الاسم</th><th>آخر ظهور</th></tr>${dv.map(d=>`<tr><td>${esc(d.device_id)}</td><td>${esc(d.name||"")}</td><td>${esc(d.last_seen)}</td></tr>`).join("")}</table></div>`;
+    $("#now").onclick=async()=>{await flush();go("sync")};
+    el.querySelectorAll("[data-drop]").forEach(b=>b.onclick=()=>{outbox=outbox.filter(o=>o.key!==b.dataset.drop);saveBox();go("sync")});
+    el.querySelectorAll("[data-r]").forEach(b=>b.onclick=async()=>{try{await api(`/sync/conflicts/${encodeURIComponent(b.dataset.d)}/${encodeURIComponent(b.dataset.o)}/resolve`,{method:"POST",body:JSON.stringify({action:b.dataset.r})});go("sync")}catch(e){msg($("#m"),e.message)}});
+  },
+  developer:async el=>{
+    const ds=await api("/webhooks/deliveries").catch(()=>[]);
+    el.innerHTML=`<div class="card"><h2>بوابة المطورين</h2><div id="m"></div><p><a href="/docs" target="_blank">توثيق OpenAPI</a></p>
+      <div class="row"><label>رابط Webhook<input id="u" style="min-width:260px" placeholder="https://"></label>
+      ${["invoice.posted","stock.changed","payment.confirmed"].map(e=>`<label><span><input type="checkbox" class="ev" value="${e}" checked> ${e}</span></label>`).join("")}<button id="aw">إضافة</button></div>
+      <div class="row"><label>مفتاح API جديد (صلاحيات مفصولة بفواصل)<input id="sc" style="min-width:300px" placeholder="invoice.post,payment.create"></label><button id="ak">إنشاء مفتاح</button></div></div>
+      <div class="card"><h2>سجل التسليم</h2><table><tr><th>الحدث</th><th>الحالة</th><th class="n">المحاولات</th><th>الخطأ</th></tr>
+      ${ds.map(d=>`<tr><td>${esc(d.event)}</td><td><span class="badge ${d.status==="sent"?"":d.status==="failed"?"bad":"pending"}">${esc(d.status)}</span></td><td class="n">${d.attempts}</td><td>${esc(d.last_error||"")}</td></tr>`).join("")}</table></div>`;
+    $("#aw").onclick=async()=>{try{const r=await api("/webhooks",{method:"POST",body:JSON.stringify({url:$("#u").value,events:[...el.querySelectorAll(".ev:checked")].map(x=>x.value)})});msg($("#m"),"السر (يظهر مرة واحدة): "+r.secret,true)}catch(e){msg($("#m"),e.message)}};
+    $("#ak").onclick=async()=>{try{const r=await api("/api-keys",{method:"POST",body:JSON.stringify({scopes:$("#sc").value.split(",").map(s=>s.trim()).filter(Boolean)})});msg($("#m"),"المفتاح (يظهر مرة واحدة): "+r.api_key,true)}catch(e){msg($("#m"),e.message)}};
+  },
+};
+const titles={dashboard:"الرئيسية",customers:"العملاء",items:"الأصناف",sales:"المبيعات",purchases:"المشتريات",inventory:"المخزون",accounting:"المحاسبة",pos:"نقطة البيع",restaurant:"المطعم",print:"الطباعة",sync:"المزامنة",developer:"المطورون"};
+
+function login(){
+  $("#nav").innerHTML=`<span class="brand">منصة المحاسبة</span>`;
+  $("#app").innerHTML=`<div class="card"><h2>تسجيل الدخول</h2><div id="m"></div><div class="row"><label>مفتاح API<input id="k" style="min-width:280px" autocomplete="off"></label><button id="in">دخول</button></div></div>`;
+  $("#in").onclick=async()=>{KEY=$("#k").value.trim();try{await api("/accounts");localStorage.setItem("apikey",KEY);go("dashboard")}catch(e){KEY="";msg($("#m"),"مفتاح غير صالح")}};
+}
+async function go(p){
+  if(!KEY) return login();
+  location.hash=p;
+  $("#nav").innerHTML=`<span class="brand">منصة المحاسبة</span>`+Object.keys(titles).map(k=>`<a data-p="${k}" class="${k===p?"on":""}">${titles[k]}</a>`).join("")+`<a id="out" style="margin-inline-start:auto">خروج</a>`;
+  $("#nav").querySelectorAll("[data-p]").forEach(a=>a.onclick=()=>go(a.dataset.p));
+  $("#out").onclick=()=>{localStorage.removeItem("apikey");KEY="";login()};
+  const el=$("#app");el.innerHTML="…";
+  try{await pages[p](el)}catch(e){el.innerHTML=`<div class="msg err">${esc(e.message)}</div>`}
+  renderBar();flush();
+}
+renderBar();go(pages[location.hash.slice(1)]?location.hash.slice(1):"dashboard");
+</script>
+</body>
+</html>
